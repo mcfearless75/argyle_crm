@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS leads (
 
 ALTER TABLE leads ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY IF NOT EXISTS "auth users only"
+CREATE POLICY "auth users only"
   ON leads
   FOR ALL
   USING (auth.role() = 'authenticated');
