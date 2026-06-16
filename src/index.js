@@ -6,7 +6,7 @@ function toText(raw) {
   let s = raw
     .replace(/=\r?\n/g, "")
     .replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
-  s = s.split(/\n\r?\n/).slice(1).join("\n\n"); // drop headers
+  s = s.split(/\n\r?\n/).slice(1).join("\n\n");
   s = s
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/(p|div|tr|li|h[1-6])>/gi, "\n")
@@ -31,7 +31,7 @@ function detectProduct(s) {
   return "unknown";
 }
 
-// ---------- label-based extractor (for clean "Label: value" emails) ----------
+// ---------- label-based extractor ----------
 function byLabels(text, labels) {
   const out = {};
   labels.forEach((label, i) => {
@@ -44,7 +44,7 @@ function byLabels(text, labels) {
   return out;
 }
 
-// ---------- generic fallback: scrape any "Label: value" pairs ----------
+// ---------- generic fallback ----------
 function generic(text) {
   const p = {};
   const re = /([A-Za-z][A-Za-z \/]{1,28}?)\s*:\s*\n?\s*([^\n]+)/g;
@@ -64,10 +64,9 @@ function generic(text) {
   };
 }
 
-// ---------- SOURCE RULES — add one block per lead source over time ----------
+// ---------- SOURCE RULES ----------
 const SOURCES = [
   {
-    // Wix website form — CONFIRMED format
     name: "website",
     match: (from, subject) =>
       /wix|argyle/i.test(from) || /new submission|contact got|submission summary/i.test(subject),
@@ -81,7 +80,6 @@ const SOURCES = [
     },
   },
   {
-    // Google Business Profile — PLACEHOLDER. Confirm against a real GBP lead email.
     name: "google",
     match: (from, subject) =>
       /google\.com|businessprofile|business\.google/i.test(from) ||
@@ -89,7 +87,6 @@ const SOURCES = [
     extract: (text) => generic(text),
   },
   {
-    // Facebook Lead Ads email notification — PLACEHOLDER. Confirm against a real sample.
     name: "facebook",
     match: (from, subject) =>
       /facebook|fb\.com|meta\.com/i.test(from) || /lead|new response/i.test(subject),
@@ -97,10 +94,12 @@ const SOURCES = [
   },
 ];
 
-// ---------- combine: pick a source, extract, tag ----------
+// ---------- parse ----------
 function parseAny(text, from, subject) {
   const src = SOURCES.find((s) => s.match(from || "", subject || ""));
   const base = src ? src.extract(text) : generic(text);
+  // Store raw body only for generic fallback (unrecognised source)
+  const raw = src ? null : text;
   return {
     name: base.name || "Unknown",
     email: base.email || null,
@@ -111,7 +110,23 @@ function parseAny(text, from, subject) {
     source: src ? src.name : "email",
     product: detectProduct(`${base.subject || ""} ${base.message || ""}`),
     status: "new",
+    raw,
   };
+}
+
+// ---------- dedup ----------
+async function isDuplicate(lead, env) {
+  if (!lead.email || !lead.subject) return false;
+  const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const url = `${env.SUPABASE_URL}/rest/v1/leads?email=eq.${encodeURIComponent(lead.email)}&subject=eq.${encodeURIComponent(lead.subject)}&created_at=gte.${since}&select=id&limit=1`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+    },
+  });
+  const rows = await res.json();
+  return Array.isArray(rows) && rows.length > 0;
 }
 
 // ---------- Supabase insert ----------
@@ -133,22 +148,48 @@ async function insertLead(lead, env) {
   }
 }
 
+// ---------- Resend alert ----------
+async function sendAlert(lead, err, env) {
+  if (!env.RESEND_API_KEY || !env.ALERT_EMAIL) return;
+  await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: "Argyle CRM <alerts@argyle-crm.com>",
+      to: env.ALERT_EMAIL,
+      subject: "Lead insert failed — action required",
+      text: `A lead could not be saved to Supabase.\n\nError: ${err.message}\n\nLead data:\n${JSON.stringify(lead, null, 2)}`,
+    }),
+  });
+}
+
 export default {
-  // Inbound email handler
   async email(message, env, ctx) {
     try {
       const raw = await new Response(message.raw).text();
       const subject = message.headers.get("subject") || "";
       const lead = parseAny(toText(raw), message.from, subject);
       console.log("Parsed lead", JSON.stringify(lead));
-      await insertLead(lead, env);
+
+      if (await isDuplicate(lead, env)) {
+        console.log("Duplicate suppressed", lead.email, lead.subject);
+        return;
+      }
+
+      try {
+        await insertLead(lead, env);
+      } catch (insertErr) {
+        console.error("Insert failed, sending alert", insertErr.message);
+        await sendAlert(lead, insertErr, env);
+      }
     } catch (err) {
       console.error("Lead parse/insert error", err.message);
-      // Swallow the error so the email isn't bounced/retried into a loop.
     }
   },
 
-  // Optional health check: visit the worker URL to confirm it's deployed
   async fetch() {
     return new Response("argyle-lead-parser: ok", { status: 200 });
   },
