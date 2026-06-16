@@ -172,10 +172,10 @@ export default {
       const raw = await new Response(message.raw).text();
       const subject = message.headers.get("subject") || "";
       const lead = parseAny(toText(raw), message.from, subject);
-      console.log("Parsed lead", JSON.stringify(lead));
+      console.log("Lead parsed", { source: lead.source, product: lead.product, status: lead.status });
 
       if (await isDuplicate(lead, env)) {
-        console.log("Duplicate suppressed", lead.email, lead.subject);
+        console.log("Duplicate suppressed", { source: lead.source, product: lead.product });
         return;
       }
 

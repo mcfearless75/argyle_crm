@@ -14,7 +14,7 @@ export function Login({ onSuccess }) {
     const { error } = await supabase.auth.signInWithPassword({ email, password: pin })
     setLoading(false)
     if (error) { setError(error.message); return }
-    onSuccess()
+    onSuccess?.()
   }
 
   return (

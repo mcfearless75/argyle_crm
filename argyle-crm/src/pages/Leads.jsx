@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 
 function timeAgo(iso) {
+  if (!iso) return ''
   const diff = Math.floor((Date.now() - new Date(iso)) / 1000)
   if (diff < 60) return `${diff}s ago`
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
@@ -12,19 +13,35 @@ function timeAgo(iso) {
 
 export function Leads() {
   const [leads, setLeads] = useState([])
+  const [error, setError] = useState(null)
   const navigate = useNavigate()
 
   useEffect(() => {
     supabase.from('leads').select('*').order('created_at', { ascending: false })
-      .then(({ data }) => { if (data) setLeads(data) })
+      .then(({ data, error }) => {
+        if (error) {
+          setError(error.message || 'Failed to load leads.')
+        } else if (data) {
+          setLeads(data)
+        }
+      })
 
     const channel = supabase.channel('leads-realtime')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'leads' },
-        payload => setLeads(prev => [payload.new, ...prev]))
+        payload => setLeads(prev => prev.some(l => l.id === payload.new.id) ? prev : [payload.new, ...prev]))
       .subscribe()
 
     return () => supabase.removeChannel(channel)
   }, [])
+
+  if (error) {
+    return (
+      <div style={{ maxWidth: 480, margin: '0 auto', padding: 16 }}>
+        <h1 style={{ marginBottom: 16, fontSize: 22 }}>Leads</h1>
+        <div style={{ color: '#cc0000', background: '#fff0f0', borderRadius: 8, padding: 12 }}>{error}</div>
+      </div>
+    )
+  }
 
   return (
     <div style={{ maxWidth: 480, margin: '0 auto', padding: 16 }}>

@@ -19,7 +19,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={session ? <Navigate to="/leads" /> : <Login onSuccess={() => {}} />} />
+        <Route path="/" element={session ? <Navigate to="/leads" /> : <Login />} />
         <Route path="/leads" element={session ? <Leads /> : <Navigate to="/" />} />
         <Route path="/leads/:id" element={session ? <LeadDetail /> : <Navigate to="/" />} />
       </Routes>
