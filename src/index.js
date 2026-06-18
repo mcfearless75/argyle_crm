@@ -137,7 +137,7 @@ async function insertLead(lead, env) {
       apikey: env.SUPABASE_SERVICE_KEY,
       Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
       "Content-Type": "application/json",
-      Prefer: "return=minimal",
+      Prefer: "return=representation",
     },
     body: JSON.stringify(lead),
   });
@@ -145,6 +145,129 @@ async function insertLead(lead, env) {
     const body = await res.text();
     console.error("Supabase insert failed", res.status, body);
     throw new Error(`Supabase ${res.status}`);
+  }
+  const [row] = await res.json();
+  return row;
+}
+
+// ---------- Web Push (RFC 8291 aes128gcm + RFC 8292 VAPID) ----------
+function b64url(buf) {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+
+function fromB64url(s) {
+  const padded = s.replace(/-/g, "+").replace(/_/g, "/");
+  return Uint8Array.from(atob(padded + "=".repeat((4 - padded.length % 4) % 4)), c => c.charCodeAt(0));
+}
+
+function concat(...arrays) {
+  const out = new Uint8Array(arrays.reduce((n, a) => n + a.length, 0));
+  let off = 0;
+  for (const a of arrays) { out.set(a, off); off += a.length; }
+  return out;
+}
+
+async function hkdf(salt, ikm, info, length) {
+  const base = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "HKDF", hash: "SHA-256", salt, info },
+    base, length * 8
+  );
+  return new Uint8Array(bits);
+}
+
+async function encryptWebPush(sub, payloadStr, vapidPub, vapidPriv, vapidSub) {
+  const enc = new TextEncoder();
+  const p256dh = fromB64url(sub.keys.p256dh);
+  const auth   = fromB64url(sub.keys.auth);
+  const plain  = enc.encode(payloadStr);
+
+  // Ephemeral ECDH key pair (as = application server)
+  const ephemeral = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  const asPub = new Uint8Array(await crypto.subtle.exportKey("raw", ephemeral.publicKey));
+
+  // ECDH shared secret
+  const uaPub = await crypto.subtle.importKey("raw", p256dh, { name: "ECDH", namedCurve: "P-256" }, false, []);
+  const dh = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: uaPub }, ephemeral.privateKey, 256));
+
+  // IKM (RFC 8291 §3.3): HKDF(salt=auth, ikm=dh, info="WebPush: info\0" || ua_pub || as_pub, L=32)
+  const authInfo = concat(enc.encode("WebPush: info\0"), p256dh, asPub);
+  const ikm = await hkdf(auth, dh, authInfo, 32);
+
+  // Per-message salt
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+
+  // CEK + Nonce (RFC 8188)
+  const cek   = await hkdf(salt, ikm, enc.encode("Content-Encoding: aes128gcm\0"), 16);
+  const nonce = await hkdf(salt, ikm, enc.encode("Content-Encoding: nonce\0"), 12);
+
+  // Encrypt AES-128-GCM (append \x02 end-of-record delimiter)
+  const aesKey = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["encrypt"]);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, aesKey, concat(plain, new Uint8Array([0x02]))));
+
+  // aes128gcm header: salt(16) + rs(4) + keyid_len(1) + keyid(65)
+  const rs = new Uint8Array([0x00, 0x00, 0x10, 0x00]); // 4096
+  const body = concat(salt, rs, new Uint8Array([asPub.length]), asPub, ct);
+
+  // VAPID JWT (RFC 8292)
+  const aud = new URL(sub.endpoint).origin;
+  const now = Math.floor(Date.now() / 1000);
+  const jwtH = b64url(enc.encode(JSON.stringify({ typ: "JWT", alg: "ES256" })));
+  const jwtP = b64url(enc.encode(JSON.stringify({ aud, exp: now + 3600, sub: vapidSub })));
+  const unsigned = `${jwtH}.${jwtP}`;
+
+  const pubBytes = fromB64url(vapidPub);
+  const sigKey = await crypto.subtle.importKey("jwk", {
+    kty: "EC", crv: "P-256",
+    d: vapidPriv,
+    x: b64url(pubBytes.slice(1, 33)),
+    y: b64url(pubBytes.slice(33, 65)),
+  }, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, sigKey, enc.encode(unsigned)));
+
+  return {
+    body,
+    headers: {
+      "Content-Encoding": "aes128gcm",
+      "Content-Type": "application/octet-stream",
+      Authorization: `vapid t=${unsigned}.${b64url(sig)},k=${vapidPub}`,
+      TTL: "60",
+    },
+  };
+}
+
+async function sendPushNotifications(lead, env) {
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY || !env.VAPID_SUBJECT) return;
+  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/push_subscriptions?select=endpoint,subscription`, {
+    headers: { apikey: env.SUPABASE_SERVICE_KEY, Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}` },
+  });
+  const subs = await res.json();
+  if (!Array.isArray(subs) || !subs.length) return;
+
+  const payload = JSON.stringify({
+    title: `New enquiry — ${lead.name || "Unknown"}`,
+    body: (lead.message || lead.subject || "").slice(0, 80),
+    url: lead.id ? `/leads/${lead.id}` : "/leads",
+  });
+
+  const stale = [];
+  await Promise.allSettled(subs.map(async ({ endpoint, subscription }) => {
+    try {
+      const { body, headers } = await encryptWebPush(subscription, payload, env.VAPID_PUBLIC_KEY, env.VAPID_PRIVATE_KEY, env.VAPID_SUBJECT);
+      const r = await fetch(endpoint, { method: "POST", headers, body });
+      if (r.status === 404 || r.status === 410) stale.push(endpoint);
+    } catch (e) {
+      console.warn("Push delivery failed", endpoint, e.message);
+    }
+  }));
+
+  if (stale.length) {
+    await fetch(`${env.SUPABASE_URL}/rest/v1/push_subscriptions?endpoint=in.(${stale.map(e => `"${e}"`).join(",")})`, {
+      method: "DELETE",
+      headers: { apikey: env.SUPABASE_SERVICE_KEY, Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}` },
+    });
   }
 }
 
@@ -179,11 +302,19 @@ export default {
         return;
       }
 
+      let row;
       try {
-        await insertLead(lead, env);
+        row = await insertLead(lead, env);
       } catch (insertErr) {
         console.error("Insert failed, sending alert", insertErr.message);
         await sendAlert(lead, insertErr, env);
+        return;
+      }
+
+      try {
+        await sendPushNotifications(row || lead, env);
+      } catch (pushErr) {
+        console.warn("Push notifications failed (non-fatal)", pushErr.message);
       }
     } catch (err) {
       console.error("Lead parse/insert error", err.message);

@@ -6,6 +6,13 @@ import { Login } from './pages/Login'
 import { Leads } from './pages/Leads'
 import { LeadDetail } from './pages/LeadDetail'
 
+function urlB64ToUint8Array(b64) {
+  const padding = '='.repeat((4 - b64.length % 4) % 4)
+  const base64 = (b64 + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const raw = atob(base64)
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)))
+}
+
 function PushBanner() {
   const { C } = useTheme()
   const [show, setShow] = useState(false)
@@ -18,8 +25,26 @@ function PushBanner() {
 
   if (!show) return null
 
-  function handleEnable() {
-    Notification.requestPermission().then(() => setShow(false))
+  async function handleEnable() {
+    setShow(false)
+    const permission = await Notification.requestPermission()
+    if (permission !== 'granted') return
+
+    try {
+      const reg = await navigator.serviceWorker.ready
+      const vapidKey = import.meta.env.VITE_VAPID_PUBLIC_KEY
+      if (!vapidKey) { console.warn('VITE_VAPID_PUBLIC_KEY not set — push disabled'); return }
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlB64ToUint8Array(vapidKey),
+      })
+      await supabase.from('push_subscriptions').upsert(
+        { endpoint: sub.endpoint, subscription: sub.toJSON() },
+        { onConflict: 'endpoint' }
+      )
+    } catch (e) {
+      console.warn('Push subscription failed:', e)
+    }
   }
 
   return (
