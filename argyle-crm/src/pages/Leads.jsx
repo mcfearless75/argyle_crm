@@ -77,6 +77,7 @@ export function Leads() {
               style={{
                 background: C.surface,
                 border: `1px solid ${isHovered ? C.borderHover : C.border}`,
+                borderLeft: lead.status === 'new' ? `3px solid ${C.green}` : `1px solid ${isHovered ? C.borderHover : C.border}`,
                 borderRadius: 12,
                 padding: '14px 16px',
                 marginBottom: 10,
@@ -86,7 +87,7 @@ export function Leads() {
                 boxShadow: isHovered ? `0 4px 20px ${C.greenDim}` : 'none',
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: lead.phone ? 6 : 10 }}>
                 <strong style={{ fontSize: 16, fontWeight: 600, color: C.text }}>{lead.name || 'Unknown'}</strong>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ fontSize: 12, color: C.muted, fontFamily: "'Fira Code', monospace" }}>{timeAgo(lead.created_at)}</span>
@@ -95,6 +96,9 @@ export function Leads() {
                   </svg>
                 </div>
               </div>
+              {lead.phone && (
+                <p style={{ fontSize: 13, color: C.muted, fontFamily: "'Fira Code', monospace", marginBottom: 10 }}>{lead.phone}</p>
+              )}
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {lead.source && <Chip bg="rgba(59,130,246,0.12)" color="#3B82F6">{lead.source}</Chip>}
                 {lead.product && <Chip bg="rgba(245,158,11,0.12)" color="#F59E0B">{lead.product}</Chip>}
@@ -142,10 +146,10 @@ function Header({ count, C, dark, toggle }) {
             </svg>
           )}
         </button>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ width: 7, height: 7, borderRadius: '50%', background: C.green, display: 'inline-block', boxShadow: `0 0 6px ${C.green}` }} />
-          <span style={{ fontSize: 11, fontWeight: 600, color: C.green, fontFamily: "'Fira Code', monospace", letterSpacing: '0.06em' }}>LIVE</span>
-        </div>
+        <span
+          title="Live — updates in real time"
+          style={{ width: 8, height: 8, borderRadius: '50%', background: C.green, display: 'inline-block', boxShadow: `0 0 6px ${C.green}` }}
+        />
       </div>
     </div>
   )

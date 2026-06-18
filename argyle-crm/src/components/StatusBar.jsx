@@ -1,6 +1,15 @@
 import { useTheme } from '../lib/ThemeContext'
 
 const STAGES = ['new', 'called', 'site visit', 'quoted', 'deposit', 'installed', 'done']
+const STAGE_LABELS = {
+  new: '🆕 New',
+  called: '📞 Called',
+  'site visit': '🏠 Site Visit',
+  quoted: '💰 Quoted',
+  deposit: '💳 Deposit',
+  installed: '🔧 Installed',
+  done: '✅ Done',
+}
 
 export function StatusBar({ currentStatus, onStatusChange }) {
   const { C } = useTheme()
@@ -35,7 +44,7 @@ export function StatusBar({ currentStatus, onStatusChange }) {
                 fontFamily: "'Fira Sans', sans-serif",
               }}
             >
-              {stage}
+              {STAGE_LABELS[stage] || stage}
             </button>
           )
         })}
