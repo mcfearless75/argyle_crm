@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { supabase } from './lib/supabase'
+import { ThemeProvider } from './lib/ThemeContext'
 import { Login } from './pages/Login'
 import { Leads } from './pages/Leads'
 import { LeadDetail } from './pages/LeadDetail'
@@ -17,6 +18,7 @@ export default function App() {
   if (session === undefined) return null // loading
 
   return (
+    <ThemeProvider>
     <BrowserRouter>
       <Routes>
         <Route path="/" element={session ? <Navigate to="/leads" /> : <Login />} />
@@ -24,5 +26,6 @@ export default function App() {
         <Route path="/leads/:id" element={session ? <LeadDetail /> : <Navigate to="/" />} />
       </Routes>
     </BrowserRouter>
+    </ThemeProvider>
   )
 }
